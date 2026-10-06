@@ -1,0 +1,89 @@
+## ============================================================================
+## Example 2 of the paper (Beta, Normal, Beta)
+##   y_i | theta ~ N(theta, 1),   pi(theta) = Beta(1, 1),   q(theta) = Beta(alpha, beta)
+## 
+## ============================================================================
+for (f in list.files("../R", full.names = TRUE)) source(f) 
+
+set.seed(123)
+n <- 1000
+y <- rnorm(n, mean = 0.6, sd = 1)
+
+## N(theta, 1), with constants
+loglik <- function(theta) sum(dnorm(y, theta[1], 1, log = TRUE))   
+
+families <- list(theta = fam_beta)
+# Beta(1, 1)
+priors   <- list(theta = fam_beta$eta(1, 1))                 
+# model
+model <- qvmp_model(loglik, families)
+# fit
+t_fit   <- system.time(fit <- qvmp_fit(model, priors, rho = 0.8))
+summary(fit)
+## ============================================================================
+## Example 2 of the paper (Beta, Normal, Beta) with unknown variance
+##   y_i | theta, omega ~ N(theta, exp(omega)),   omega = log sigma^2
+##   pi(theta) = Beta(1, 1),   pi(omega) = N(0, 0.1)
+##   q(theta, omega) = Beta(alpha, beta) x N(m, s2)   (two mean-field blocks)
+##
+## ============================================================================
+set.seed(123)
+n <- 100
+y <- rnorm(n, mean = 0.6, sd = 1)
+
+## N(theta, sigma^2), with constants
+loglik <- function(theta) sum(dnorm(y, theta[1], exp(theta[2] / 2), log = TRUE))
+
+families <- list(theta = fam_beta, omega = fam_mvnormal(1))
+# Beta(1, 1) and N(0, 10^2)
+priors   <- list(theta = fam_beta$eta(1, 1), omega = families$omega$eta(0, matrix(0.1)))
+# Model
+model <- qvmp_model(loglik, families)
+# fit
+t_fit   <- system.time(fit <- qvmp_fit(model, priors, rho = 0.8))
+summary(fit)
+
+## NUTS (rstan) for comparison
+library(rstan)
+nuts <- stan(model_code = "
+data { int n; vector[n] y; }
+parameters { real<lower=0, upper=1> theta; real omega; }
+model { theta ~ beta(1, 1); omega ~ normal(0, sqrt(0.1)); y ~ normal(theta, exp(omega / 2)); }",
+data = list(n = n, y = y))
+summary(nuts, pars = c("theta", "omega"))$summary[, c("mean", "sd")]
+
+
+
+## ============================================================================
+## Example 3 of the paper (Logistic regression)
+##   y_i | beta ~ Bernoulli(sigmoid(x_i' beta)),   beta in R^9 (intercept + 8 covariates)
+##   pi(beta) = N(0, 100 I),   q(beta) = N(mu, Sigma)   (one multivariate block)
+##
+## ============================================================================
+
+set.seed(123)
+n <- 1000
+p <- 9
+X <- cbind(1, matrix(rnorm(n * (p - 1)), n, p - 1))
+beta_true <- c(0.5, -1, 0.2, 0.8, -0.5, 1.2, -0.3, 0.6, -0.9)
+y <- rbinom(n, 1, 1 / (1 + exp(-X %*% beta_true)))
+
+## Bernoulli with logit link
+loglik <- function(beta) { eta <- X %*% beta; sum(y * eta - log(1 + exp(eta))) }
+
+families <- list(beta = fam_mvnormal(p))
+# N(0, 100 I)
+priors   <- list(beta = families$beta$eta(rep(0, p), diag(100, p)))
+# model
+t_model <- system.time(model <- qvmp_model(loglik, families))
+# fit (starts at the prior)
+t_fit   <- system.time(fit <- qvmp_fit(model, priors, rho = 0.7))
+summary(fit)
+
+## NUTS (rstan) for comparison
+nuts <- stan(model_code = "
+data { int n; int p; matrix[n, p] X; array[n] int y; }
+parameters { vector[p] beta; }
+model { beta ~ normal(0, 10); y ~ bernoulli_logit(X * beta); }",
+data = list(n = n, p = p, X = X, y = y), refresh = 0)
+summary(nuts, pars = "beta")$summary[, c("mean", "sd")]
